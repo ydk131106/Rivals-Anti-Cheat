@@ -1,0 +1,205 @@
+--// Roblox Rivals Anti-Cheat Full Bypass
+--// Optimized + Stealth Version
+--// 2026
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+local LocalPlayer = Players.LocalPlayer
+
+--// ====================== [ CONFIG ] ======================
+local CONFIG = {
+    Debug = false,                  -- true로 하면 콘솔에 로그 남김
+    SpoofWalkSpeed = 16,            -- 안티치트한테 보여줄 값
+    SpoofJumpPower = 50,
+    SpoofHipHeight = 2,
+    EnablePositionSpoof = true,     -- 위치 스푸핑
+    EnableStateSpoof = true,        -- Humanoid 상태 스푸핑
+    GCCacheInterval = 5,            -- GC 다시 스캔하는 주기 (초)
+}
+
+--// ====================== [ UTILS ] ======================
+local function log(...)
+    if CONFIG.Debug then
+        print("[RivalsBypass]", ...)
+    end
+end
+
+local function safeHookFunction(old, new)
+    local success, result = pcall(function()
+        return hookfunction(old, newcclosure(new))
+    end)
+    return success and result or old
+end
+
+local function safeHookMeta(method, fn)
+    local success, result = pcall(function()
+        return hookmetamethod(game, method, newcclosure(fn))
+    end)
+    return success
+end
+
+--// ====================== [ 1. AnalyticsPipeline 완전 무력화 ] ======================
+local function killAnalytics()
+    -- Controller 함수 영원히 멈춤
+    for _, v in getgc(true) do
+        if typeof(v) == "function" then
+            local success, source = pcall(debug.info, v, "s")
+            if success and source and string.find(source, "AnalyticsPipelineController") then
+                safeHookFunction(v, function()
+                    return task.wait(9e9)
+                end)
+                log("AnalyticsPipelineController hanged")
+            end
+        end
+    end
+
+    -- RemoteEvent OnClientEvent 연결 끊기
+    local success, remote = pcall(function()
+        return ReplicatedStorage:WaitForChild("Remotes", 5)
+            :WaitForChild("AnalyticsPipeline", 5)
+            :WaitForChild("RemoteEvent", 5)
+    end)
+
+    if success and remote then
+        for _, conn in getconnections(remote.OnClientEvent) do
+            if conn.Function then
+                safeHookFunction(conn.Function, function() end)
+            end
+            pcall(function() conn:Disable() end)
+        end
+        log("AnalyticsPipeline RemoteEvent hooked")
+    end
+end
+
+--// ====================== [ 2. Kick 완전 차단 ] ======================
+local oldNamecall
+oldNamecall = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
+    local method = getnamecallmethod()
+    local args = {...}
+
+    -- Kick 차단
+    if method == "Kick" then
+        log("Blocked Kick attempt")
+        return
+    end
+
+    -- 안티치트 관련 FireServer / InvokeServer 차단
+    if method == "FireServer" or method == "InvokeServer" then
+        local remoteName = tostring(self)
+        if string.find(remoteName:lower(), "analytics") 
+        or string.find(remoteName:lower(), "report") 
+        or string.find(remoteName:lower(), "detect") 
+        or string.find(remoteName:lower(), "ban") 
+        or string.find(remoteName:lower(), "anticheat") then
+            log("Blocked suspicious remote:", remoteName)
+            return
+        end
+    end
+
+    return oldNamecall(self, ...)
+end))
+
+--// ====================== [ 3. Humanoid 스푸핑 ] ======================
+local spoofValues = {
+    WalkSpeed = CONFIG.SpoofWalkSpeed,
+    JumpPower = CONFIG.SpoofJumpPower,
+    HipHeight = CONFIG.SpoofHipHeight,
+}
+
+local oldIndex
+oldIndex = hookmetamethod(game, "__index", newcclosure(function(self, key)
+    if not checkcaller() and typeof(self) == "Instance" and self:IsA("Humanoid") then
+        if spoofValues[key] then
+            return spoofValues[key]
+        end
+    end
+    return oldIndex(self, key)
+end))
+
+local oldNewIndex
+oldNewIndex = hookmetamethod(game, "__newindex", newcclosure(function(self, key, value)
+    if not checkcaller() and typeof(self) == "Instance" and self:IsA("Humanoid") then
+        if spoofValues[key] then
+            -- 실제 값은 적용하되, 안티치트한테는 스푸핑 값 유지
+            return oldNewIndex(self, key, value)
+        end
+    end
+    return oldNewIndex(self, key, value)
+end))
+
+--// ====================== [ 4. Position 스푸핑 (선택) ] ======================
+local lastSafePosition = nil
+
+if CONFIG.EnablePositionSpoof then
+    local oldIndex2
+    oldIndex2 = hookmetamethod(game, "__index", newcclosure(function(self, key)
+        if not checkcaller() and typeof(self) == "Instance" then
+            if self:IsA("BasePart") and (key == "Position" or key == "CFrame") then
+                if self.Name == "HumanoidRootPart" or self.Name == "Torso" or self.Name == "UpperTorso" then
+                    if lastSafePosition and key == "Position" then
+                        return lastSafePosition
+                    end
+                end
+            end
+        end
+        return oldIndex2(self, key)
+    end))
+
+    -- 주기적으로 안전한 위치 저장
+    task.spawn(function()
+        while task.wait(0.5) do
+            local char = LocalPlayer.Character
+            if char and char:FindFirstChild("HumanoidRootPart") then
+                lastSafePosition = char.HumanoidRootPart.Position
+            end
+        end
+    end)
+end
+
+--// ====================== [ 5. checkcaller / getcallingscript 스푸핑 ] ======================
+if checkcaller then
+    local oldCheckCaller = checkcaller
+    checkcaller = newcclosure(function()
+        return false
+    end)
+end
+
+if getcallingscript then
+    local oldGetCallingScript = getcallingscript
+    getcallingscript = newcclosure(function()
+        return nil
+    end)
+end
+
+--// ====================== [ 6. 추가 보호 ] ======================
+-- PlayerRemoving 이벤트로 킥 로그 막기
+pcall(function()
+    for _, conn in getconnections(Players.PlayerRemoving) do
+        if conn.Function then
+            safeHookFunction(conn.Function, function() end)
+        end
+    end
+end)
+
+-- Instance.new 감시 우회 (LocalScript 생성 감지 방지)
+local oldInstanceNew = Instance.new
+Instance.new = newcclosure(function(class, parent)
+    if class == "LocalScript" or class == "ModuleScript" then
+        -- 필요시 여기서 추가 처리 가능
+    end
+    return oldInstanceNew(class, parent)
+end)
+
+--// ====================== [ 7. 주기적 재스캔 ] ======================
+task.spawn(function()
+    while task.wait(CONFIG.GCCacheInterval) do
+        killAnalytics()
+    end
+end)
+
+--// ====================== [ INIT ] ======================
+killAnalytics()
+
+log("Rivals Full Bypass Loaded")
+print("Rivals AC Bypass Ready")
